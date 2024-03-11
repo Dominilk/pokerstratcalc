@@ -1,0 +1,7 @@
+[workspace]
+
+members = [ 
+    "poker-base", "poker-client",
+    "poker-server",
+]
+resolver = "2"

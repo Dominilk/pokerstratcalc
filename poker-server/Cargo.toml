@@ -1,0 +1,15 @@
+[package]
+name = "poker-server"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+itertools = "0.12.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+poker-base = { path = "../poker-base" }
+log = "0.4.21"
+simple_logger = "4.3.3"
+rand = "0.8.5"
