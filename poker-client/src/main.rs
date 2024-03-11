@@ -1,4 +1,4 @@
-use std::{env, error::Error, io::Write, net::TcpStream, time::Instant};
+use std::{env, error::Error, io::Write, net::TcpStream, sync::Arc, thread, time::Instant};
 
 use itertools::Itertools;
 use poker_base::{Card, ComputationBlock, ComputedBlock, ComputedMove, Rank, StraightFlushDetails, Value};
@@ -78,22 +78,67 @@ fn calculate_optimal(remaining: &[Card], shown: &[Card; 5]) -> ComputedMove {
     }
 }
 
-fn compute_combinations(deck: &[Card], combinations: &[[Card; 5]]) -> ComputedBlock {
+fn compute_combinations(mut combinations: Vec<[Card; 5]>) -> ComputedBlock {
+    let deck = Arc::new(Card::full_deck());
     let mut moves: Vec<_> = Vec::with_capacity(combinations.len()); // shown: chosen
-    
+
+    let cpus = thread::available_parallelism().map(|parallelism| parallelism.get()).unwrap_or(1);
+    let combinations_per_cpu = combinations.len() / cpus;
+
+    let mut handles = Vec::with_capacity(cpus);
+
+    for _ in 0..cpus {
+        let thread_combinations: Vec<_> = combinations.drain(0..combinations_per_cpu).collect();
+        let deck = deck.clone();
+
+        handles.push(thread::spawn(move || {
+            let mut moves: Vec<_> = Vec::with_capacity(thread_combinations.len());
+
+            for shown in thread_combinations {
+                let remaining = deck
+                    .iter()
+                    .filter(|card| !shown.contains(card))
+                    .copied()
+                    .collect::<Vec<_>>();
+                
+                let optimal = calculate_optimal(&remaining, &shown);
+                
+                moves.push(optimal);
+            }
+
+            moves
+        }));
+    }
+
     for shown in combinations {
         let remaining = deck
-                .iter()
-                .filter(|card| !shown.contains(card))
-                .copied()
-                .collect::<Vec<_>>();
+            .iter()
+            .filter(|card| !shown.contains(card))
+            .copied()
+            .collect::<Vec<_>>();
         
-        let optimal = calculate_optimal(&remaining, shown);
+        let optimal = calculate_optimal(&remaining, &shown);
         
         moves.push(optimal);
-
-        log::info!("{}/{} ({}%)", moves.len(), combinations.len(), ((moves.len() as f64) / (combinations.len() as f64)) * 100f64);
     }
+
+    for handle in handles {
+        moves.extend(handle.join().unwrap());
+    }
+    
+    // for shown in combinations {
+    //     let remaining = deck
+    //             .iter()
+    //             .filter(|card| !shown.contains(card))
+    //             .copied()
+    //             .collect::<Vec<_>>();
+        
+    //     let optimal = calculate_optimal(&remaining, shown);
+        
+    //     moves.push(optimal);
+
+    //     log::info!("{}/{} ({}%)", moves.len(), combinations.len(), ((moves.len() as f64) / (combinations.len() as f64)) * 100f64);
+    // }
 
     ComputedBlock { moves }
 }
@@ -118,9 +163,7 @@ fn start(peer: String) -> Result<(), Box<dyn Error>> {
 
         let start = Instant::now();
 
-        let deck = Card::full_deck();
-
-        let computed = compute_combinations(&deck, &block.patterns);
+        let computed = compute_combinations(block.patterns);
 
         log::info!("Computed block in {}ms.", start.elapsed().as_millis());
 
@@ -166,3 +209,5 @@ fn main() {
 fn usage(binary: &str) {
     log::error!("Usage: {binary} <peer>");
 }
+
+
