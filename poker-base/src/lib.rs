@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::HashSet, hash::Hash};
+use std::{cmp::Ordering, hash::Hash};
 
 use serde::{Serialize, Deserialize};
 
@@ -308,15 +308,23 @@ pub struct ComputationBlock {
     pub patterns: Vec<[Card; 5]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputedMove {
     /// The pattern of cards shown.
     pub pattern: [Card; 5],
     /// The indices of the cards to keep.
     pub keep: Vec<usize>,
     // /// The average score keeping these cards yields.
-    // average_score: f32
+    pub average_score: f64
 }
+
+impl PartialEq<ComputedMove> for ComputedMove {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern
+    }
+}
+
+impl Eq for ComputedMove {}
 
 impl Hash for ComputedMove {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {

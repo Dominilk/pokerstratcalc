@@ -74,7 +74,8 @@ fn calculate_optimal(remaining: &[Card], shown: &[Card; 5]) -> ComputedMove {
 
     ComputedMove {
         pattern: *shown,
-        keep: optimal
+        keep: optimal,
+        average_score: max_score
     }
 }
 
