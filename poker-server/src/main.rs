@@ -1,6 +1,6 @@
 
 use core::fmt;
-use std::{collections::HashSet, error::Error, fs, io::{self, Read}, net::{TcpListener, TcpStream}, path::Path, time::Duration};
+use std::{collections::HashSet, error::Error, fs, io::{self, Read}, net::{TcpListener, TcpStream}, path::Path, sync::{Arc, RwLock}, thread, time::Duration};
 
 use itertools::Itertools;
 use serde::{Serialize, Deserialize};
@@ -8,7 +8,7 @@ use rand::prelude::SliceRandom;
 
 use poker_base::*;
 
-pub const STD_BLOCK_SIZE: usize = 250usize;
+pub const STD_BLOCK_SIZE: usize = 5usize;
 pub const AUTOSAVE_THRESHOLD: usize = 16usize;
 pub const STATE_FILE: &str = "state.json";
 pub const SERVER_ADDRESS: &str = "0.0.0.0:5566";
@@ -83,7 +83,7 @@ fn save_state(file: impl AsRef<Path>, state: &ComputationState) -> Result<(), Bo
     Ok(())
 }
 
-fn handle_connection(state: &mut ComputationState, mut connection: TcpStream) -> Result<TcpStream, Box<dyn Error>> {
+fn handle_connection(state: Arc<RwLock<ComputationState>>, mut connection: TcpStream) -> Result<TcpStream, Box<dyn Error>> {
     connection.set_read_timeout(Some(Duration::from_secs(10)))?;
 
     let mut operation = [0u8; 1];
@@ -95,13 +95,17 @@ fn handle_connection(state: &mut ComputationState, mut connection: TcpStream) ->
 
         let mut patterns = Vec::with_capacity(STD_BLOCK_SIZE);
 
-        let mut remaining: Vec<_> = state.remaining.iter().collect();
+        // todo: dirty:
+        let state = state.read().unwrap();
+        let mut remaining: Vec<_> = state.remaining.iter().copied().collect();
+        drop(state);
+
         remaining.shuffle(&mut rand::thread_rng());
         let mut remaining = remaining.into_iter();
 
         for _ in 0..STD_BLOCK_SIZE {
             match remaining.next() {
-                Some(pattern) => patterns.push(*pattern),
+                Some(pattern) => patterns.push(pattern),
                 None => {
                     log::warn!("No remaining blocks to compute!");
 
@@ -125,6 +129,8 @@ fn handle_connection(state: &mut ComputationState, mut connection: TcpStream) ->
             log::warn!("Received a computed block of size {} (expected {}).", computed.moves.len(), STD_BLOCK_SIZE);
         }
 
+        let mut state = state.write().unwrap();
+
         for optimal in computed.moves.into_iter() {
             if state.remaining.remove(&optimal.pattern) {
                 state.computed.insert(optimal);
@@ -145,12 +151,34 @@ fn handle_connection(state: &mut ComputationState, mut connection: TcpStream) ->
 fn start() -> Result<(), Box<dyn Error>> {
     log::info!("A compute block size of {} will be used.", STD_BLOCK_SIZE);
     log::info!("Loading state...");
-    let mut state = load_state(STATE_FILE)?;
-    log::info!("State loaded: {state}");
+    
+    let state = Arc::new(RwLock::new(load_state(STATE_FILE)?));
 
+    log::info!("State loaded: {}", state.read().unwrap());
     log::info!("Starting server on `{}`...", SERVER_ADDRESS);
 
-    let mut last_saved = state.remaining.len();
+    let mut last_saved = state.read().unwrap().remaining.len();
+
+    // state save thread.
+    thread::spawn({
+        let state = state.clone();
+
+        move || {
+            loop {
+                thread::sleep(Duration::from_secs(60));
+
+                let state = state.read().unwrap();
+
+                if last_saved - state.remaining.len() > STD_BLOCK_SIZE * AUTOSAVE_THRESHOLD {
+                    if let Err(error) = save_state(STATE_FILE, &state) {
+                        log::error!("Error: {}", error);
+                    }
+
+                    last_saved = state.remaining.len();
+                }
+            }
+        }
+    });
 
     let listener = TcpListener::bind(SERVER_ADDRESS)?;
 
@@ -159,21 +187,21 @@ fn start() -> Result<(), Box<dyn Error>> {
             Ok(stream) => {
                 log::info!("New connection from `{}`.", stream.peer_addr()?);
 
-                match handle_connection(&mut state, stream) {
-                    Ok(connection) => {
+                thread::spawn({
+                    let state = state.clone();
 
-                        if last_saved - state.remaining.len() > STD_BLOCK_SIZE * AUTOSAVE_THRESHOLD {
-                            save_state(STATE_FILE, &state)?;
-
-                            last_saved = state.remaining.len();
+                    move || {
+                        match handle_connection(state.clone(), stream) {
+                            Ok(connection) => {        
+                                log::info!("Connection from `{}` successfully handled.", connection.peer_addr().map(|addr| addr.to_string()).unwrap_or_else(|_| "?".to_string()));
+                            },
+                            Err(error) => {
+                                log::error!("Error: {}", error);
+                            }
                         }
-
-                        log::info!("Connection from `{}` successfully handled.", connection.peer_addr()?);
-                    },
-                    Err(error) => {
-                        log::error!("Error: {}", error);
                     }
-                }
+                });
+                
             },
             Err(error) => {
                 log::error!("Error (from connection): {}.", error);
