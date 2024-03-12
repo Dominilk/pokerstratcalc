@@ -8,8 +8,8 @@ use rand::prelude::SliceRandom;
 
 use poker_base::*;
 
-pub const STD_BLOCK_SIZE: usize = 5usize;
-pub const AUTOSAVE_THRESHOLD: usize = 16usize;
+pub const STD_BLOCK_SIZE: usize = 250usize;
+pub const AUTOSAVE_THRESHOLD: usize = 32usize;
 pub const STATE_FILE: &str = "state.json";
 pub const SERVER_ADDRESS: &str = "0.0.0.0:5566";
 
