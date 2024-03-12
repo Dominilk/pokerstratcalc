@@ -1,6 +1,6 @@
 
 use core::fmt;
-use std::{collections::HashSet, error::Error, fs, io::{self, Read}, net::{TcpListener, TcpStream}, path::Path, sync::{Arc, RwLock}, thread, time::Duration};
+use std::{collections::{HashMap, HashSet}, error::Error, fs, io::{self, Read}, net::{TcpListener, TcpStream}, path::Path, sync::{Arc, RwLock}, thread, time::{Duration, SystemTime}};
 
 use itertools::Itertools;
 use serde::{Serialize, Deserialize};
@@ -12,6 +12,7 @@ pub const STD_BLOCK_SIZE: usize = 250usize;
 pub const AUTOSAVE_THRESHOLD: usize = 32usize;
 pub const STATE_FILE: &str = "state.json";
 pub const SERVER_ADDRESS: &str = "0.0.0.0:5566";
+pub const LAST_SENT_TIMEOUT: u128 = 1000u128 * 60u128;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ComputationState {
@@ -83,7 +84,7 @@ fn save_state(file: impl AsRef<Path>, state: &ComputationState) -> Result<(), Bo
     Ok(())
 }
 
-fn handle_connection(state: Arc<RwLock<ComputationState>>, mut connection: TcpStream) -> Result<TcpStream, Box<dyn Error>> {
+fn handle_connection(state: Arc<RwLock<ComputationState>>, last_sent: Arc<HashMap<[Card; 5], RwLock<u128>>>, mut connection: TcpStream) -> Result<TcpStream, Box<dyn Error>> {
     connection.set_read_timeout(Some(Duration::from_secs(10)))?;
 
     let mut operation = [0u8; 1];
@@ -103,21 +104,41 @@ fn handle_connection(state: Arc<RwLock<ComputationState>>, mut connection: TcpSt
         remaining.shuffle(&mut rand::thread_rng());
         let mut remaining = remaining.into_iter();
 
-        for _ in 0..STD_BLOCK_SIZE {
-            match remaining.next() {
-                Some(pattern) => patterns.push(pattern),
-                None => {
-                    log::warn!("No remaining blocks to compute!");
+        let now = unix_now();
 
-                    break;
+        let mut ignored = Vec::default();
+
+        while patterns.len() < STD_BLOCK_SIZE {
+            match remaining.next() {
+                Some(pattern) => {
+                    if now - *last_sent.get(&pattern).unwrap().read().unwrap() > LAST_SENT_TIMEOUT {
+                        *last_sent.get(&pattern).unwrap().write().unwrap() = now;
+                    } else {
+                        ignored.push(pattern);
+
+                        continue;
+                    }
+
+                    patterns.push(pattern);
+                },
+                None => {
+                    match ignored.pop() {
+                        Some(pattern) => {
+                            log::warn!("Demand higher than what is available! Re-assigning recent patterns which took too long to complete.");
+
+                            *last_sent.get(&pattern).unwrap().write().unwrap() = now;
+                        },
+                        None => {
+                            log::warn!("No remaining blocks to compute!");
+
+                            break;
+                        }
+                    }
                 }
             }
         }
 
-        // TODO: potentially save a timestamp of last sent and if exceeded only then send again.
-
         serde_json::to_writer(&mut connection, &ComputationBlock { patterns })?;
-
 
         Ok(connection)
     } else if operation == [1u8] {
@@ -148,11 +169,18 @@ fn handle_connection(state: Arc<RwLock<ComputationState>>, mut connection: TcpSt
 
 }
 
+fn unix_now() -> u128 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis()
+}
+
 fn start() -> Result<(), Box<dyn Error>> {
     log::info!("A compute block size of {} will be used.", STD_BLOCK_SIZE);
     log::info!("Loading state...");
-    
-    let state = Arc::new(RwLock::new(load_state(STATE_FILE)?));
+
+    let state = load_state(STATE_FILE)?;
+
+    let last_sent = Arc::new(state.remaining.iter().map(|pattern| (*pattern, RwLock::new(0u128))).collect::<HashMap<_, _>>());
+    let state = Arc::new(RwLock::new(state));
 
     log::info!("State loaded: {}", state.read().unwrap());
     log::info!("Starting server on `{}`...", SERVER_ADDRESS);
@@ -189,9 +217,10 @@ fn start() -> Result<(), Box<dyn Error>> {
 
                 thread::spawn({
                     let state = state.clone();
+                    let last_sent = last_sent.clone();
 
                     move || {
-                        match handle_connection(state.clone(), stream) {
+                        match handle_connection(state.clone(), last_sent, stream) {
                             Ok(connection) => {        
                                 log::info!("Connection from `{}` successfully handled.", connection.peer_addr().map(|addr| addr.to_string()).unwrap_or_else(|_| "?".to_string()));
                             },
