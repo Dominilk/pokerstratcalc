@@ -1,6 +1,6 @@
 
 use core::fmt;
-use std::{collections::{HashMap, HashSet}, error::Error, fs, io::{self, Read}, net::{TcpListener, TcpStream}, path::Path, sync::{Arc, RwLock}, thread, time::{Duration, SystemTime}};
+use std::{collections::{HashMap, HashSet}, error::Error, fs, io::{self, Read}, net::{TcpListener, TcpStream}, path::Path, process, sync::{Arc, RwLock}, thread, time::{Duration, SystemTime}};
 
 use itertools::Itertools;
 use serde::{Serialize, Deserialize};
@@ -179,9 +179,14 @@ fn start() -> Result<(), Box<dyn Error>> {
 
                 let state = state.read().unwrap();
 
-                if last_saved - state.remaining.len() > STD_BLOCK_SIZE * AUTOSAVE_THRESHOLD {
+                if last_saved - state.remaining.len() > STD_BLOCK_SIZE * AUTOSAVE_THRESHOLD || state.remaining.is_empty() {
                     if let Err(error) = save_state(STATE_FILE, &state) {
                         log::error!("Error: {}", error);
+                    }
+
+                    if state.remaining.is_empty() {
+                        log::warn!("No remaining blocks to compute! Exiting...");
+                        process::exit(0);
                     }
 
                     last_saved = state.remaining.len();
