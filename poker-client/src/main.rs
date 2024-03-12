@@ -92,6 +92,7 @@ fn compute_combinations(mut combinations: Vec<[Card; 5]>) -> ComputedBlock {
         let thread_combinations: Vec<_> = combinations.drain(0..combinations_per_cpu).collect();
         let deck = deck.clone();
 
+        // TODO: Spwaning threads is expensive. potentially spawn at start and then alwys move load to them.
         handles.push(thread::spawn(move || {
             let mut moves: Vec<_> = Vec::with_capacity(thread_combinations.len());
 
