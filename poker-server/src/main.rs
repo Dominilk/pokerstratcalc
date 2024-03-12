@@ -4,15 +4,13 @@ use std::{collections::{HashMap, HashSet}, error::Error, fs, io::{self, Read}, n
 
 use itertools::Itertools;
 use serde::{Serialize, Deserialize};
-use rand::prelude::SliceRandom;
 
 use poker_base::*;
 
-pub const STD_BLOCK_SIZE: usize = 250usize;
+pub const STD_BLOCK_SIZE: usize = 5usize;
 pub const AUTOSAVE_THRESHOLD: usize = 32usize;
 pub const STATE_FILE: &str = "state.json";
 pub const SERVER_ADDRESS: &str = "0.0.0.0:5566";
-pub const LAST_SENT_TIMEOUT: u128 = 1000u128 * 60u128;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ComputationState {
@@ -99,41 +97,25 @@ fn handle_connection(state: Arc<RwLock<ComputationState>>, last_sent: Arc<HashMa
         // todo: dirty:
         let state = state.read().unwrap();
         let mut remaining: Vec<_> = state.remaining.iter().copied().collect();
+        
+        remaining.sort_by(|a, b| last_sent.get(a).unwrap().read().unwrap().cmp(&last_sent.get(b).unwrap().read().unwrap()));
+
         drop(state);
 
-        remaining.shuffle(&mut rand::thread_rng());
+        let now = unix_now();
         let mut remaining = remaining.into_iter();
 
-        let now = unix_now();
-
-        let mut ignored = Vec::default();
-
-        while patterns.len() < STD_BLOCK_SIZE {
+        for _ in 0..STD_BLOCK_SIZE {
             match remaining.next() {
                 Some(pattern) => {
-                    if now - *last_sent.get(&pattern).unwrap().read().unwrap() > LAST_SENT_TIMEOUT {
-                        *last_sent.get(&pattern).unwrap().write().unwrap() = now;
-                    } else {
-                        ignored.push(pattern);
-
-                        continue;
-                    }
-
+                    *last_sent.get(&pattern).unwrap().write().unwrap() = now;
+                    
                     patterns.push(pattern);
                 },
                 None => {
-                    match ignored.pop() {
-                        Some(pattern) => {
-                            log::warn!("Demand higher than what is available! Re-assigning recent patterns which took too long to complete.");
+                    log::warn!("No remaining blocks to compute!");
 
-                            *last_sent.get(&pattern).unwrap().write().unwrap() = now;
-                        },
-                        None => {
-                            log::warn!("No remaining blocks to compute!");
-
-                            break;
-                        }
-                    }
+                    break;
                 }
             }
         }
